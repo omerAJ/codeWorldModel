@@ -1,162 +1,117 @@
 #!/usr/bin/env python3
 """
-Minimal Python trace dataset generator.
-
-This script demonstrates how to reproduce a simplified version of the
-CWM function‑level tracing pipeline. Given a Python module file and a
-function name with its arguments, it executes the function in a
-controlled environment and records a line‑by‑line trace of local
-variable states. The output is a single CWM-formatted text trace
-containing the traced function definition followed by trace frames.
-
-Usage:
-    python trace_generator.py path/to/example.py compute_sum 4
-
-The first argument is the path to the Python module containing the
-function. The second argument is the function name. All remaining
-arguments are passed to the function; they will be parsed using
-ast.literal_eval so you can pass numbers, strings, lists, etc.
-
-The resulting trace will be printed to stdout. Use `--output` (or shell
-redirection) to save it to a file.
-
-This code is intentionally simple and omits many complexities of the
-full CWM tracing pipeline (e.g., handling nested calls, external
-side effects, variable compression, etc.) but it illustrates the core
-idea of capturing program state transitions.
+Helpers for generating state-transition examples from Python execution traces.
 """
 
-import argparse
 import importlib.util
 import inspect
 import json
 import linecache
 import sys
-from ast import literal_eval
 from types import FrameType
 from typing import Any, Dict, List, Optional
 
 
 def load_function(module_path: str, func_name: str):
-    """Load a function object from a given module file and function name."""
+    """Load a function object from a Python module file."""
     spec = importlib.util.spec_from_file_location("trace_module", module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot import module from {module_path}")
+
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
     try:
         func = getattr(module, func_name)
-    except AttributeError:
-        raise AttributeError(f"Function '{func_name}' not found in {module_path}")
+    except AttributeError as exc:
+        raise AttributeError(f"Function '{func_name}' not found in {module_path}") from exc
+
     if not callable(func):
-        raise TypeError(f"'{func_name}' is not a callable object")
+        raise TypeError(f"'{func_name}' is not callable")
     return func
 
 
 def trace_function(func: Any, func_args: List[Any], module_path: str) -> Dict[str, Any]:
-    """Execute a function under a tracer and record a simplified execution trace.
-
-    Returns a dictionary with the source context and a list of events.
-    Each event includes the event type (call, line, return, exception),
-    the line number, the source code line, and the local variables at
-    that point. For return and exception events, the return value or
-    exception info is also included.
-    """
-    # Capture just the target function's source for context (not the full module).
-    # Fall back to the full module source only if we cannot retrieve the function.
+    """Execute a function and capture line-level local-state snapshots."""
     try:
-        source_code = inspect.getsource(func)
+        raw_source_lines, source_start_lineno = inspect.getsourcelines(func)
+        source_lines = [line.rstrip("\n") for line in raw_source_lines]
     except OSError:
         with open(module_path, "r", encoding="utf-8") as f:
-            source_code = f.read()
-    # We identify the target function's code object to filter events
+            source_lines = f.read().splitlines()
+        source_start_lineno = 1
+
     target_code = func.__code__
     events: List[Dict[str, Any]] = []
 
-    def local_vars_snapshot(frame: FrameType) -> Dict[str, str]:
-        """Return a copy of local variables with repr() for JSON encoding."""
-        snapshot = {}
-        for k, v in frame.f_locals.items():
-            # Represent values using repr to preserve information like strings
+    def snapshot_locals(frame: FrameType) -> Dict[str, str]:
+        snapshot: Dict[str, str] = {}
+        for key, value in frame.f_locals.items():
             try:
-                snapshot[k] = repr(v)
+                snapshot[key] = repr(value)
             except Exception:
-                snapshot[k] = "<unrepr>"
+                snapshot[key] = "<unrepr>"
         return snapshot
 
-    def tracer(frame: FrameType, event: str, arg: Any):
-        # We only care about events for the target function
-        if event == "call":
-            # Start tracing when we enter the target function
-            if frame.f_code is target_code:
-                # Record the call with initial locals (arguments)
-                event_record = {
-                    "event": "call",
-                    "lineno": frame.f_lineno,
-                    "source": linecache.getline(module_path, frame.f_lineno).rstrip(),
-                    "locals": local_vars_snapshot(frame),
-                }
-                events.append(event_record)
-                return trace_lines  # Return inner tracer for line/return events
-            else:
-                # Do not trace other function calls
-                return None
-        return None
-
     def trace_lines(frame: FrameType, event: str, arg: Any):
-        # Only handle events for our target function
         if frame.f_code is not target_code:
             return trace_lines
+
+        line_src = linecache.getline(module_path, frame.f_lineno).rstrip("\n")
         if event == "line":
-            event_record = {
-                "event": "line",
-                "lineno": frame.f_lineno,
-                "source": linecache.getline(module_path, frame.f_lineno).rstrip(),
-                "locals": local_vars_snapshot(frame),
-            }
-            events.append(event_record)
+            events.append(
+                {
+                    "event": "line",
+                    "lineno": frame.f_lineno,
+                    "source": line_src,
+                    "locals": snapshot_locals(frame),
+                }
+            )
         elif event == "return":
-            event_record = {
-                "event": "return",
-                "lineno": frame.f_lineno,
-                "source": linecache.getline(module_path, frame.f_lineno).rstrip(),
-                "locals": local_vars_snapshot(frame),
-                "return_value": repr(arg),
-            }
-            events.append(event_record)
+            events.append(
+                {
+                    "event": "return",
+                    "lineno": frame.f_lineno,
+                    "source": line_src,
+                    "locals": snapshot_locals(frame),
+                    "return_value": repr(arg),
+                }
+            )
         elif event == "exception":
-            # arg is (exc_type, exc_value, traceback)
             exc_type, exc_value, _ = arg
-            event_record = {
-                "event": "exception",
-                "lineno": frame.f_lineno,
-                "source": linecache.getline(module_path, frame.f_lineno).rstrip(),
-                "locals": local_vars_snapshot(frame),
-                "exception_type": repr(exc_type.__name__),
-                "exception_value": repr(exc_value),
-            }
-            events.append(event_record)
-        # Continue tracing
+            events.append(
+                {
+                    "event": "exception",
+                    "lineno": frame.f_lineno,
+                    "source": line_src,
+                    "locals": snapshot_locals(frame),
+                    "exception_type": exc_type.__name__,
+                    "exception_value": repr(exc_value),
+                }
+            )
+
         return trace_lines
 
-    # Install the tracer
-    sys.settrace(tracer)
-    exception_info: Optional[Dict[str, Any]] = None
+    def trace_calls(frame: FrameType, event: str, arg: Any):
+        if event == "call" and frame.f_code is target_code:
+            return trace_lines
+        return None
+
+    exception_info: Optional[Dict[str, str]] = None
+    sys.settrace(trace_calls)
     try:
         func(*func_args)
-    except Exception as e:
-        # Exceptions within the function will trigger the exception event
-        exception_info = {"exception": repr(e)}
+    except Exception as exc:
+        exception_info = {"exception": repr(exc)}
     finally:
-        # Disable tracing
         sys.settrace(None)
 
-    # Compose final trace object
-    trace_data = {
+    trace_data: Dict[str, Any] = {
         "module": module_path,
         "function": func.__name__,
         "args": [repr(a) for a in func_args],
-        "source": source_code,
+        "source_lines": source_lines,
+        "source_start_lineno": source_start_lineno,
         "events": events,
     }
     if exception_info is not None:
@@ -164,171 +119,116 @@ def trace_function(func: Any, func_args: List[Any], module_path: str) -> Dict[st
     return trace_data
 
 
-def format_cwm_trace(
-    context_code: str,
-    func_name: str,
-    args_repr: List[str],
-    events: List[Dict[str, Any]],
-    *,
-    include_call_context: bool = False,
+def _append_summary_token(text: str, token: str) -> str:
+    text = text.rstrip()
+    if not text:
+        return token
+    return f"{text}\n{token}"
+
+
+def _find_next_event(events: List[Dict[str, Any]], start_idx: int) -> Optional[Dict[str, Any]]:
+    for idx in range(start_idx, len(events)):
+        ev = events[idx]
+        if ev.get("event") in {"line", "return", "exception"}:
+            return ev
+    return None
+
+
+def _state_payload(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "event": event["event"],
+        "locals": event.get("locals", {}),
+    }
+    if event["event"] == "return":
+        payload["return_value"] = event.get("return_value")
+    elif event["event"] == "exception":
+        payload["exception_type"] = event.get("exception_type")
+        payload["exception_value"] = event.get("exception_value")
+    return payload
+
+
+def _context_for_line(source_lines: List[str], source_start_lineno: int, lineno: int) -> str:
+    offset = lineno - source_start_lineno
+    if offset <= 0:
+        return ""
+    if offset > len(source_lines):
+        offset = len(source_lines)
+    return "\n".join(source_lines[:offset]).rstrip("\n")
+
+
+def _action_for_line(
+    source_lines: List[str], source_start_lineno: int, event: Dict[str, Any]
 ) -> str:
-    """Format a trace in the CWM execution trace representation.
+    lineno = event["lineno"]
+    offset = lineno - source_start_lineno
+    if 0 <= offset < len(source_lines):
+        return source_lines[offset].rstrip("\n")
+    return event.get("source", "").rstrip("\n")
 
-    Args:
-        context_code: The Python source context (typically the function definition).
-        func_name: The name of the traced function.
-        args_repr: The list of arguments (as repr strings) passed to the function.
-        events: A list of event dictionaries produced by trace_function().
 
-    Returns:
-        A single string containing the context code followed by the trace in
-        CWM format, including the required separator tokens. The trace starts
-        immediately after the `<|trace_context_start|>` token and ends with a
-        final `<|frame_sep|>` token. Each event uses `<|frame_sep|>` followed
-        by one of `<|call_sep|>`, `<|line_sep|>`, `<|return_sep|>`, or
-        `<|exception_sep|>`.
+def build_transition_examples(
+    trace_data: Dict[str, Any],
+    task_id: str,
+    entry_point: str,
+    *,
+    ctx_sum_token: str = "<CTX_SUM>",
+    act_sum_token: str = "<ACT_SUM>",
+    state_sum_token: str = "<STATE_SUM>",
+) -> List[Dict[str, Any]]:
+    """Convert a raw trace into per-line transition examples.
+
+    Each example contains four model fields with trailing summary tokens:
+    code_context, action, current_state, and next_state.
     """
-    context = context_code.strip("\n")
-    if include_call_context:
-        # Build a simple main function call context with a START_OF_TRACE marker.
-        # This mimics how CWM examples embed the entry point of the trace.
-        args_str = ", ".join(args_repr)
-        main_code = f"def main(): # << START_OF_TRACE\n    return {func_name}({args_str})\n"
-        context = context + "\n" + main_code
-    # Begin trace with context and trace_context_start token
-    # Build the trace content: context, trace context token, then event lines
-    lines: List[str] = []
-    # Include the context code first
-    lines.append(context)
-    # The trace_context_start token indicates that the code context has ended
-    lines.append("<|trace_context_start|>")
-    # Build each event as a single line string
-    # Track previous locals to compress unchanged values with ".."
-    prev_locals: Dict[str, str] = {}
-    for ev in events:
-        if ev["event"] in {"call", "line"}:
-            # Build a compressed locals dictionary
-            full_locals: Dict[str, str] = ev["locals"]  # as repr strings
-            compressed: Dict[str, str] = {}
-            for key, value in full_locals.items():
-                if key in prev_locals and prev_locals[key] == value:
-                    compressed[key] = ".."
-                else:
-                    compressed[key] = value
-            # Update prev_locals for next comparison
-            prev_locals = full_locals.copy()
-            if ev["event"] == "call":
-                line = (
-                    "<|frame_sep|><|call_sep|>"
-                    + json.dumps(compressed, ensure_ascii=False)
-                    + "<|action_sep|>"
-                    + ev["source"].rstrip()
-                )
-                lines.append(line)
-            else:  # line event
-                line = (
-                    "<|frame_sep|><|line_sep|>"
-                    + json.dumps(compressed, ensure_ascii=False)
-                    + "<|action_sep|>"
-                    + ev["source"].rstrip()
-                )
-                lines.append(line)
-        elif ev["event"] == "return":
-            # Return event resets prev_locals because execution ended
-            prev_locals = {}
-            line = (
-                "<|frame_sep|><|return_sep|><|action_sep|>"
-                + ev["source"].rstrip()
-                + "<|arg_sep|>"
-                + json.dumps(ev["return_value"], ensure_ascii=False)
-            )
-            lines.append(line)
-        elif ev["event"] == "exception":
-            # Exception event resets prev_locals
-            prev_locals = {}
-            line = (
-                "<|frame_sep|><|exception_sep|><|action_sep|>"
-                + ev["source"].rstrip()
-                + "<|arg_sep|>"
-                + json.dumps(ev["exception_value"], ensure_ascii=False)
-            )
-            lines.append(line)
-        else:
-            # Skip unknown events
+    source_lines: List[str] = trace_data.get("source_lines", [])
+    source_start_lineno: int = int(trace_data.get("source_start_lineno", 1))
+    events: List[Dict[str, Any]] = trace_data.get("events", [])
+
+    examples: List[Dict[str, Any]] = []
+    step_index = 0
+
+    for idx, current_event in enumerate(events):
+        if current_event.get("event") != "line":
             continue
-    # Finally, append a closing frame separator to mark the end of the trace
-    lines.append("<|frame_sep|>")
-    # Join with newline separators for readability
-    return "\n".join(lines)
 
+        next_event = _find_next_event(events, idx + 1)
+        if next_event is None:
+            continue
 
-def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Generate a Python execution trace in CWM format. The output includes "
-            "the source context (the traced function definition), a "
-            "<|trace_context_start|> token, and frame separators (<|frame_sep|>) "
-            "with event tags (<|call_sep|>, <|line_sep|>, <|return_sep|>, "
-            "<|exception_sep|>)."
+        code_context = _context_for_line(
+            source_lines,
+            source_start_lineno,
+            int(current_event["lineno"]),
         )
-    )
-    parser.add_argument(
-        "module_path",
-        help="Path to the Python file containing the function to trace",
-    )
-    parser.add_argument(
-        "function_name",
-        help="Name of the function to trace",
-    )
-    parser.add_argument(
-        "args",
-        nargs='+',
-        help=(
-            "Arguments to pass to the function (literal eval). Example: python "
-            "trace_generator.py example.py factorial 5"
-        ),
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        help=(
-            "Optional output file to save the CWM trace. If not provided, the "
-            "trace is printed to stdout."
-        ),
-    )
-    parser.add_argument(
-        "--include-call-context",
-        action="store_true",
-        help=(
-            "Include a synthetic main() wrapper that calls the traced function "
-            "(adds a START_OF_TRACE marker)."
-        ),
-    )
-    args = parser.parse_args()
+        action = _action_for_line(source_lines, source_start_lineno, current_event)
 
-    # Load function and parse arguments
-    func = load_function(args.module_path, args.function_name)
-    func_args = [literal_eval(a) for a in args.args]
+        current_state = json.dumps(
+            _state_payload(current_event),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        next_state = json.dumps(
+            _state_payload(next_event),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
-    # Generate the raw trace data (source context and events)
-    trace_data = trace_function(func, func_args, args.module_path)
+        examples.append(
+            {
+                "example_id": f"{task_id}:{step_index}",
+                "task_id": task_id,
+                "entry_point": entry_point,
+                "step_index": step_index,
+                "line_no": current_event["lineno"],
+                "next_event_type": next_event["event"],
+                "code_context": _append_summary_token(code_context, ctx_sum_token),
+                "action": _append_summary_token(action, act_sum_token),
+                "current_state": _append_summary_token(current_state, state_sum_token),
+                "next_state": _append_summary_token(next_state, state_sum_token),
+            }
+        )
+        step_index += 1
 
-    # Format the trace in CWM representation
-    cwm_trace = format_cwm_trace(
-        trace_data["source"],
-        trace_data["function"],
-        trace_data["args"],
-        trace_data["events"],
-        include_call_context=args.include_call_context,
-    )
-
-    # Output the trace either to file or stdout
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(cwm_trace)
-    else:
-        print(cwm_trace)
-
-
-if __name__ == "__main__":
-    main()
+    return examples
