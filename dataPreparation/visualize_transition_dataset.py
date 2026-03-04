@@ -3,7 +3,7 @@
 Create an interactive HTML viewer for transition-dataset JSONL files.
 
 The viewer supports search, filtering, pagination, and readable rendering
-of code context, action, current state, and next state.
+of code context, action, next action, current state, and next state.
 """
 
 import argparse
@@ -26,8 +26,6 @@ def load_jsonl(path: str) -> Tuple[List[Dict[str, Any]], List[str]]:
             except json.JSONDecodeError as exc:
                 errors.append(f"line {line_no}: {exc}")
                 continue
-
-            record["__row_id"] = len(examples)
             examples.append(record)
 
     return examples, errors
@@ -104,7 +102,7 @@ h1 {{
 .meta {{ color: var(--muted); font-size: 0.9rem; }}
 .controls {{
   display: grid;
-  grid-template-columns: repeat(6, minmax(140px, 1fr));
+  grid-template-columns: repeat(8, minmax(140px, 1fr));
   gap: 10px;
   margin-top: 10px;
 }}
@@ -196,6 +194,51 @@ pre {{
   margin: 16px 0;
   flex-wrap: wrap;
 }}
+.table-wrap {{
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: auto;
+  background: #fff;
+}}
+.compact-table {{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}}
+.compact-table th {{
+  text-align: left;
+  padding: 8px;
+  background: #f0f5f9;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}}
+.compact-table td {{
+  padding: 8px;
+  border-bottom: 1px solid #edf2f6;
+  vertical-align: top;
+}}
+.compact-table tr:hover td {{
+  background: #f7fafc;
+}}
+.mono {{
+  font-family: "JetBrains Mono", "Consolas", monospace;
+}}
+.clip {{
+  display: inline-block;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+.bool-true {{
+  color: #0b7a75;
+  font-weight: 700;
+}}
+.bool-false {{
+  color: #7a8793;
+}}
 @media (max-width: 1100px) {{
   .controls {{ grid-template-columns: repeat(2, minmax(140px, 1fr)); }}
 }}
@@ -228,6 +271,24 @@ pre {{
       <select id=\"event\"><option value=\"\">All</option></select>
     </label>
     <label>
+      No-op Filter
+      <select id=\"noop\">
+        <option value=\"\">All</option>
+        <option value=\"loop_progress\">Loop progress only</option>
+        <option value=\"any_noop\">Any no-op</option>
+        <option value=\"branch_noop\">Branch no-op</option>
+        <option value=\"pure_identity_noop\">Pure identity no-op</option>
+        <option value=\"non_noop\">Non no-op</option>
+      </select>
+    </label>
+    <label>
+      View Mode
+      <select id=\"viewMode\">
+        <option value=\"cards\" selected>Cards</option>
+        <option value=\"table\">Table (compact)</option>
+      </select>
+    </label>
+    <label>
       Page Size
       <select id=\"pageSize\">
         <option>10</option>
@@ -253,7 +314,7 @@ pre {{
   <div id=\"results\"></div>
   <div class=\"footer-controls\">
     <div class=\"meta\" id=\"pageInfo\"></div>
-    <div class=\"meta\">Shortcuts: <code>/</code> search, <code>n</code>/<code>p</code> page, <code>j</code> jump.</div>
+    <div class=\"meta\">Shortcuts: <code>/</code> search, <code>n</code>/<code>p</code> page, <code>j</code> jump, <code>v</code> view mode.</div>
   </div>
 </main>
 <script>
@@ -267,6 +328,8 @@ const state = {{
   task: "",
   entry: "",
   event: "",
+  noop: "",
+  viewMode: "cards",
 }};
 
 const els = {{
@@ -276,6 +339,8 @@ const els = {{
   task: document.getElementById("task"),
   entry: document.getElementById("entry"),
   event: document.getElementById("event"),
+  noop: document.getElementById("noop"),
+  viewMode: document.getElementById("viewMode"),
   pageSize: document.getElementById("pageSize"),
   jump: document.getElementById("jump"),
   apply: document.getElementById("apply"),
@@ -333,6 +398,42 @@ function makeField(label, text, openByDefault = false) {{
   return details;
 }}
 
+function stripSummaryToken(raw) {{
+  const lines = String(raw || "").split("\\n");
+  if (lines.length === 0) return "";
+  const tail = lines[lines.length - 1].trim();
+  if (tail === "<CTX_SUM>" || tail === "<ACT_SUM>" || tail === "<STATE_SUM>") {{
+    lines.pop();
+  }}
+  return lines.join("\\n");
+}}
+
+function compactLine(raw) {{
+  const plain = stripSummaryToken(raw);
+  const firstLine = plain.split("\\n").find(line => line.trim() !== "");
+  return firstLine || "";
+}}
+
+function changedVarsFromField(ex) {{
+  return Array.isArray(ex.changed_vars) ? ex.changed_vars : [];
+}}
+
+function matchesNoopFilter(ex, noopFilter) {{
+  if (!noopFilter) return true;
+
+  const isNoopState = Boolean(ex.is_noop_state);
+  const isBranchNoop = Boolean(ex.is_branch_noop);
+  const isPureIdentityNoop = Boolean(ex.is_pure_identity_noop);
+  const isLoopProgressOnly = Boolean(ex.is_loop_progress_only);
+
+  if (noopFilter === "loop_progress") return isLoopProgressOnly;
+  if (noopFilter === "any_noop") return isNoopState;
+  if (noopFilter === "branch_noop") return isBranchNoop;
+  if (noopFilter === "pure_identity_noop") return isPureIdentityNoop;
+  if (noopFilter === "non_noop") return !isNoopState;
+  return true;
+}}
+
 function getFiltered() {{
   const q = normalize(state.search);
 
@@ -340,17 +441,26 @@ function getFiltered() {{
     if (state.task && String(ex.task_id || "") !== state.task) return false;
     if (state.entry && String(ex.entry_point || "") !== state.entry) return false;
     if (state.event && String(ex.next_event_type || "") !== state.event) return false;
+    if (!matchesNoopFilter(ex, state.noop)) return false;
 
     if (!q) return true;
     const searchable = [
       ex.example_id,
       ex.task_id,
       ex.entry_point,
+      ex.task_text,
       ex.next_event_type,
       ex.code_context,
       ex.action,
+      ex.next_action,
       ex.current_state,
       ex.next_state,
+      String(ex.is_noop_state),
+      String(ex.is_branch_noop),
+      String(ex.is_pure_identity_noop),
+      String(ex.is_loop_progress_only),
+      String(changedVarsFromField(ex)),
+      String(ex.next_line_no || ""),
     ].map(normalize).join("\\n");
 
     return searchable.includes(q);
@@ -371,49 +481,115 @@ function render() {{
   const pageItems = filtered.slice(start, end);
 
   els.results.textContent = "";
+  if (state.viewMode === "table") {{
+    const wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    const table = document.createElement("table");
+    table.className = "compact-table";
 
-  pageItems.forEach((ex, idx) => {{
-    const card = document.createElement("section");
-    card.className = "card";
-
-    const top = document.createElement("div");
-    top.className = "card-top";
-
-    const left = document.createElement("div");
-    const title = document.createElement("strong");
-    const absoluteIndex = start + idx + 1;
-    title.textContent = `#${{absoluteIndex}} ${{ex.example_id || "(no id)"}}`;
-    left.appendChild(title);
-
-    const badges = document.createElement("div");
-    badges.className = "badges";
-
-    const badgeValues = [
-      `task: ${{ex.task_id || "n/a"}}`,
-      `entry: ${{ex.entry_point || "n/a"}}`,
-      `step: ${{ex.step_index ?? "n/a"}}`,
-      `line: ${{ex.line_no ?? "n/a"}}`,
-      `next: ${{ex.next_event_type || "n/a"}}`,
-    ];
-
-    badgeValues.forEach(text => {{
-      const b = document.createElement("span");
-      b.className = "badge";
-      b.textContent = text;
-      badges.appendChild(b);
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["#", "Example", "Line", "Action", "Next Action", "Loop", "No-op", "Branch", "Identity"].forEach(text => {{
+      const th = document.createElement("th");
+      th.textContent = text;
+      headRow.appendChild(th);
     }});
+    thead.appendChild(headRow);
+    table.appendChild(thead);
 
-    top.appendChild(left);
-    top.appendChild(badges);
-    card.appendChild(top);
+    const tbody = document.createElement("tbody");
+    pageItems.forEach((ex, idx) => {{
+      const tr = document.createElement("tr");
+      const absoluteIndex = start + idx + 1;
+      const cells = [
+        String(absoluteIndex),
+        ex.example_id || "(no id)",
+        String(ex.line_no ?? "n/a"),
+        compactLine(ex.action),
+        compactLine(ex.next_action),
+      ];
 
-    card.appendChild(makeField("Code Context", ex.code_context, false));
-    card.appendChild(makeField("Action", ex.action, true));
-    card.appendChild(makeField("Current State", ex.current_state, false));
-    card.appendChild(makeField("Next State", ex.next_state, false));
+      cells.forEach((text, cellIdx) => {{
+        const td = document.createElement("td");
+        if (cellIdx >= 3) {{
+          td.className = "mono";
+          const span = document.createElement("span");
+          span.className = "clip";
+          span.title = String(text);
+          span.textContent = String(text);
+          td.appendChild(span);
+        }} else {{
+          td.textContent = String(text);
+        }}
+        tr.appendChild(td);
+      }});
 
-    els.results.appendChild(card);
-  }});
+      [Boolean(ex.is_loop_progress_only), Boolean(ex.is_noop_state), Boolean(ex.is_branch_noop), Boolean(ex.is_pure_identity_noop)].forEach(flag => {{
+        const td = document.createElement("td");
+        td.className = flag ? "bool-true" : "bool-false";
+        td.textContent = flag ? "true" : "false";
+        tr.appendChild(td);
+      }});
+
+      tbody.appendChild(tr);
+    }});
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    els.results.appendChild(wrap);
+  }} else {{
+    pageItems.forEach((ex, idx) => {{
+      const card = document.createElement("section");
+      card.className = "card";
+
+      const top = document.createElement("div");
+      top.className = "card-top";
+
+      const left = document.createElement("div");
+      const title = document.createElement("strong");
+      const absoluteIndex = start + idx + 1;
+      title.textContent = `#${{absoluteIndex}} ${{ex.example_id || "(no id)"}}`;
+      left.appendChild(title);
+
+      const badges = document.createElement("div");
+      badges.className = "badges";
+
+      const badgeValues = [
+        `task: ${{ex.task_id || "n/a"}}`,
+        `entry: ${{ex.entry_point || "n/a"}}`,
+        `step: ${{ex.step_index ?? "n/a"}}`,
+        `line: ${{ex.line_no ?? "n/a"}}`,
+        `next_line: ${{ex.next_line_no ?? "n/a"}}`,
+        `next: ${{ex.next_event_type || "n/a"}}`,
+        `loop_progress: ${{Boolean(ex.is_loop_progress_only)}}`,
+        `noop: ${{Boolean(ex.is_noop_state)}}`,
+        `branch_noop: ${{Boolean(ex.is_branch_noop)}}`,
+        `pure_identity_noop: ${{Boolean(ex.is_pure_identity_noop)}}`,
+      ];
+
+      badgeValues.forEach(text => {{
+        const b = document.createElement("span");
+        b.className = "badge";
+        b.textContent = text;
+        badges.appendChild(b);
+      }});
+
+      top.appendChild(left);
+      top.appendChild(badges);
+      card.appendChild(top);
+
+      if (ex.task_text) {{
+        card.appendChild(makeField("Task Text", ex.task_text, false));
+      }}
+      card.appendChild(makeField("Code Context", ex.code_context, false));
+      card.appendChild(makeField("Action", ex.action, true));
+      card.appendChild(makeField("Next Action", ex.next_action, false));
+      card.appendChild(makeField("Changed Vars", JSON.stringify(changedVarsFromField(ex)), false));
+      card.appendChild(makeField("Current State", ex.current_state, false));
+      card.appendChild(makeField("Next State", ex.next_state, false));
+
+      els.results.appendChild(card);
+    }});
+  }}
 
   els.status.textContent = `Showing ${{total === 0 ? 0 : start + 1}}-${{end}} of ${{total}} filtered examples`;
   els.pageInfo.textContent = `Page ${{state.page}} / ${{totalPages}}`;
@@ -427,6 +603,8 @@ function applyFromInputs(resetPage = true) {{
   state.task = els.task.value;
   state.entry = els.entry.value;
   state.event = els.event.value;
+  state.noop = els.noop.value;
+  state.viewMode = els.viewMode.value || "cards";
   state.pageSize = parseInt(els.pageSize.value, 10) || 20;
 
   if (resetPage) state.page = 1;
@@ -444,6 +622,8 @@ function resetAll() {{
   els.task.value = "";
   els.entry.value = "";
   els.event.value = "";
+  els.noop.value = "";
+  els.viewMode.value = "cards";
   els.pageSize.value = "20";
   els.jump.value = "";
   state.page = 1;
@@ -453,7 +633,10 @@ function resetAll() {{
 function init() {{
   document.title = INITIAL_TITLE;
   els.title.textContent = INITIAL_TITLE;
-  els.meta.textContent = `${{DATA.meta.count}} examples from ${{DATA.meta.input_path}}`;
+  const loopCount = DATA.examples.filter(ex => Boolean(ex.is_loop_progress_only)).length;
+  const branchNoopCount = DATA.examples.filter(ex => Boolean(ex.is_branch_noop)).length;
+  const noopCount = DATA.examples.filter(ex => Boolean(ex.is_noop_state)).length;
+  els.meta.textContent = `${{DATA.meta.count}} examples from ${{DATA.meta.input_path}} | loop_progress=${{loopCount}} | branch_noop=${{branchNoopCount}} | noop=${{noopCount}}`;
 
   fillSelect(els.task, DATA.meta.task_ids);
   fillSelect(els.entry, DATA.meta.entry_points);
@@ -472,7 +655,7 @@ function init() {{
     render();
   }});
 
-  [els.search, els.task, els.entry, els.event, els.pageSize, els.jump].forEach(el => {{
+  [els.search, els.task, els.entry, els.event, els.noop, els.viewMode, els.pageSize, els.jump].forEach(el => {{
     el.addEventListener("keydown", evt => {{
       if (evt.key === "Enter") applyFromInputs(true);
     }});
@@ -495,6 +678,10 @@ function init() {{
     }} else if (evt.key === "j") {{
       evt.preventDefault();
       els.jump.focus();
+    }} else if (evt.key === "v") {{
+      evt.preventDefault();
+      els.viewMode.value = els.viewMode.value === "cards" ? "table" : "cards";
+      applyFromInputs(false);
     }}
   }});
 
