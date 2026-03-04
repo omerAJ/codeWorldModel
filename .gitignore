@@ -1,6 +1,6 @@
 *.jsonl
 *.json
-!/home/maincoder/Documents/codeWorldModel/code/data/runs/humaneval/humaneval_transition_balanced.meta.json
+!/data/runs/humaneval/humaneval_transition_balanced.meta.json
 *.html
 *.log
 *.pyc
