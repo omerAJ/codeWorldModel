@@ -1,0 +1,3 @@
+[submodule "eval/bigcodebench"]
+	path = eval/bigcodebench
+	url = https://github.com/bigcode-project/bigcodebench.git

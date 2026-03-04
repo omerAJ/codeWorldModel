@@ -1,6 +1,7 @@
 *.jsonl
 *.json
 !/data/runs/humaneval/humaneval_transition_balanced.meta.json
+!data/humaneval_transition_1task.jsonl
 *.html
 *.log
 *.pyc
