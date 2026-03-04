@@ -96,3 +96,65 @@ python3 dataPreparation/run_transition_pipeline.py \
   --input /path/to/mbpp.jsonl \
   --dataset-format mbpp
 ```
+
+## Latent Transition Training (Maincoder-1B)
+
+This repo now includes a configurable training stack under `src/cwmodel` for latent transition modeling:
+- independent encoding passes for `code_context`, `action`, and `current_state`
+- summary-token latent extraction (`<CTX_SUM>`, `<ACT_SUM>`, `<STATE_SUM>`)
+- predictor head that outputs concatenated next latents (`next_state` + `next_action`)
+- loss: `MSE(pred_next_state, target_next_state) + MSE(pred_next_action, target_next_action)`
+- detached target latents computed from the same backbone on `next_state` and `next_action`
+
+### 1) Environment setup (Conda)
+```bash
+conda env create -f environment.yml
+conda activate cwmodel
+```
+
+### 2) Pull model snapshot locally
+```bash
+python scripts/pull_hf_snapshot.py \
+  --model-id Maincode/Maincoder-1B \
+  --local-dir models/maincode-maincoder-1b
+```
+
+This writes `models/maincode-maincoder-1b/snapshot_meta.json`.
+To refresh later:
+```bash
+python scripts/pull_hf_snapshot.py \
+  --model-id Maincode/Maincoder-1B \
+  --local-dir models/maincode-maincoder-1b \
+  --refresh
+```
+
+### 3) Train (1-epoch default config)
+```bash
+python scripts/train.py --config configs/train.maincoder_1b.yaml
+```
+
+Artifacts are written to `outputs/<run_name_or_timestamp>/`:
+- `resolved_config.yaml`
+- `run_summary.json`
+- `metrics.jsonl`
+- `tensorboard/`
+- `checkpoints/step_*/`
+
+### 4) Common config overrides
+```bash
+python scripts/train.py \
+  --config configs/train.maincoder_1b.yaml \
+  --set model.local_path=models/maincode-maincoder-1b \
+  --set training.epochs=3 \
+  --set data.batch_size=1 \
+  --set output.run_name=maincoder_debug
+```
+
+### Project layout
+- `configs/train.maincoder_1b.yaml`: end-to-end defaults for local training
+- `scripts/pull_hf_snapshot.py`: local-only HF pull/update flow
+- `scripts/train.py`: config-driven training CLI
+- `src/cwmodel/data/*`: schema, dataset, collator
+- `src/cwmodel/modeling/*`: HF setup, latent predictor, world model
+- `src/cwmodel/training/*`: training loop and logging
+- `tests/*`: token/dataset/forward/smoke coverage

@@ -1,0 +1,76 @@
+model:
+  local_path: models/maincode-maincoder-1b
+  trust_remote_code: true
+  use_fast_tokenizer: true
+  fix_mistral_regex: true
+  enable_lora: true
+  use_4bit: true
+  gradient_checkpointing: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+    - query
+    - key
+    - value
+    - dense
+  torch_dtype: auto
+  target_eval_mode: true
+  predictor_dropout: 0.1
+  predictor_hidden_multiplier: 4
+
+tokens:
+  summary:
+    context: <CTX_SUM>
+    action: <ACT_SUM>
+    state: <STATE_SUM>
+  wrappers:
+    context_bos: <CTX_BOS>
+    action_bos: <ACT_BOS>
+    state_bos: <STATE_BOS>
+    next_action_bos: <NEXT_ACT_BOS>
+    next_state_bos: <NEXT_STATE_BOS>
+    segment_sep: <SEG_SEP>
+
+data:
+  path: data/humaneval_transition_1task.jsonl
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
+  pin_memory: true
+  max_length:
+    code_context: 768
+    action: 192
+    current_state: 256
+    next_action: 192
+    next_state: 256
+
+training:
+  epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  gradient_accumulation_steps: 8
+  max_grad_norm: 1.0
+  log_every_steps: 10
+  save_every_steps: 2000
+  seed: 42
+  amp: true
+  optimizer_beta1: 0.9
+  optimizer_beta2: 0.999
+  lr_scheduler: cosine
+  warmup_ratio: 0.1
+
+logging:
+  tensorboard: true
+  jsonl: true
+
+output:
+  root_dir: outputs
+  run_name: null
