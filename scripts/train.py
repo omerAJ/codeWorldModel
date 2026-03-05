@@ -119,6 +119,23 @@ def main() -> None:
 
     dataset_paths = cfg.data.resolved_paths()
     dataset = TransitionDataset(dataset_paths, cfg.tokens.wrappers)
+    overlength_filter_stats = None
+    if cfg.data.filter_overlength:
+        overlength_filter_stats = dataset.filter_overlength_examples(
+            tokenizer=tokenizer,
+            max_length=cfg.data.max_length,
+        )
+        print(
+            "[train.py] Applied overlength filter: "
+            f"dropped {overlength_filter_stats['dropped']} / {overlength_filter_stats['before']} "
+            f"({100.0 * float(overlength_filter_stats['dropped_ratio']):.2f}%). "
+            f"Remaining: {overlength_filter_stats['after']}."
+        )
+        if int(overlength_filter_stats["after"]) == 0:
+            raise ValueError(
+                "All samples were filtered by data.filter_overlength. "
+                "Increase data.max_length.* or disable data.filter_overlength."
+            )
     collator = TransitionCollator(tokenizer, cfg.data.max_length, summary_token_ids)
     dataloader_kwargs = {
         "dataset": dataset,
@@ -172,6 +189,8 @@ def main() -> None:
         "run_dir": str(run_dir),
         "dataset_path": dataset_paths[0] if len(dataset_paths) == 1 else None,
         "dataset_paths": dataset_paths,
+        "dataset_rows": len(dataset),
+        "overlength_filter": overlength_filter_stats,
         "global_steps": result.global_steps,
         "final_loss": result.final_loss,
         "trainable_parameters": trainable_count,

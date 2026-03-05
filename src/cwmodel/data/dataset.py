@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Dict, List, Sequence
 
 from torch.utils.data import Dataset
+from transformers import PreTrainedTokenizerBase
 
-from cwmodel.config import WrapperTokenConfig
+from cwmodel.config import MaxLengthConfig, WrapperTokenConfig
 from cwmodel.data.schema import TransitionExample
 
 
@@ -24,6 +25,7 @@ class TransitionDataset(Dataset[Dict[str, str]]):
         self.path = paths[0]
         self.wrappers = wrappers
         self.examples = self._load_examples(self.paths)
+        self.filter_stats: Dict[str, object] | None = None
 
     @staticmethod
     def _load_examples(paths: Sequence[Path]) -> List[TransitionExample]:
@@ -60,10 +62,8 @@ class TransitionDataset(Dataset[Dict[str, str]]):
     def __len__(self) -> int:
         return len(self.examples)
 
-    def __getitem__(self, index: int) -> Dict[str, str]:
-        ex = self.examples[index]
+    def _build_item(self, ex: TransitionExample) -> Dict[str, str]:
         sep = self.wrappers.segment_sep
-
         return {
             "example_id": ex.example_id,
             "task_id": ex.task_id,
@@ -94,3 +94,58 @@ class TransitionDataset(Dataset[Dict[str, str]]):
                 sep,
             ),
         }
+
+    def filter_overlength_examples(
+        self,
+        *,
+        tokenizer: PreTrainedTokenizerBase,
+        max_length: MaxLengthConfig,
+    ) -> Dict[str, object]:
+        segment_limits = {
+            "code_context": int(max_length.code_context),
+            "action": int(max_length.action),
+            "current_state": int(max_length.current_state),
+            "next_action": int(max_length.next_action),
+            "next_state": int(max_length.next_state),
+        }
+
+        before_count = len(self.examples)
+        dropped_by_segment = {name: 0 for name in segment_limits}
+        kept_examples: List[TransitionExample] = []
+
+        for ex in self.examples:
+            item = self._build_item(ex)
+            drop_sample = False
+            for segment_name, limit in segment_limits.items():
+                encoded = tokenizer(
+                    item[segment_name],
+                    truncation=False,
+                    return_attention_mask=False,
+                )
+                token_count = len(encoded["input_ids"])
+                if token_count > limit:
+                    dropped_by_segment[segment_name] += 1
+                    drop_sample = True
+                    break
+
+            if not drop_sample:
+                kept_examples.append(ex)
+
+        self.examples = kept_examples
+        after_count = len(self.examples)
+        dropped_count = before_count - after_count
+
+        stats: Dict[str, object] = {
+            "enabled": True,
+            "before": before_count,
+            "after": after_count,
+            "dropped": dropped_count,
+            "dropped_ratio": (float(dropped_count) / float(before_count)) if before_count else 0.0,
+            "dropped_by_segment": dropped_by_segment,
+            "limits": segment_limits,
+        }
+        self.filter_stats = stats
+        return stats
+
+    def __getitem__(self, index: int) -> Dict[str, str]:
+        return self._build_item(self.examples[index])

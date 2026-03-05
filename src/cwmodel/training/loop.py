@@ -9,6 +9,7 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 from transformers import get_scheduler
 
 from cwmodel.config import TrainConfig
@@ -71,7 +72,10 @@ def train_loop(
         betas=(config.training.optimizer_beta1, config.training.optimizer_beta2),
     )
 
-    updates_per_epoch = math.ceil(len(dataloader) / config.training.gradient_accumulation_steps)
+    batches_per_epoch = len(dataloader)
+    updates_per_epoch = math.ceil(
+        batches_per_epoch / config.training.gradient_accumulation_steps
+    )
     total_updates = max(1, updates_per_epoch * config.training.epochs)
     warmup_steps = int(total_updates * config.training.warmup_ratio)
 
@@ -99,7 +103,14 @@ def train_loop(
     for epoch in range(config.training.epochs):
         model.train()
 
-        for step_in_epoch, batch in enumerate(dataloader, start=1):
+        epoch_batches = tqdm(
+            dataloader,
+            total=batches_per_epoch,
+            desc=f"Epoch {epoch + 1}/{config.training.epochs}",
+            unit="batch",
+            dynamic_ncols=True,
+        )
+        for step_in_epoch, batch in enumerate(epoch_batches, start=1):
             batch = batch.to(device)
 
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
@@ -114,7 +125,7 @@ def train_loop(
 
             should_step = (
                 step_in_epoch % config.training.gradient_accumulation_steps == 0
-                or step_in_epoch == len(dataloader)
+                or step_in_epoch == batches_per_epoch
             )
             if not should_step:
                 continue
@@ -135,13 +146,21 @@ def train_loop(
 
             global_step += 1
             last_loss = float(loss.detach().item())
+            current_lr = float(scheduler.get_last_lr()[0])
+            epoch_batches.set_postfix(
+                {
+                    "loss": f"{last_loss:.4f}",
+                    "lr": f"{current_lr:.2e}",
+                    "step": f"{global_step}/{total_updates}",
+                }
+            )
 
             if metrics_logger is not None and global_step % config.training.log_every_steps == 0:
                 metrics_logger.log(
                     global_step,
                     {
                         "train/loss": last_loss,
-                        "train/lr": float(scheduler.get_last_lr()[0]),
+                        "train/lr": current_lr,
                         "train/epoch": float(epoch + 1),
                     },
                 )
@@ -157,6 +176,7 @@ def train_loop(
                     out_dir,
                     step=global_step,
                 )
+        epoch_batches.close()
 
     _save_checkpoint(model, optimizer, scheduler, out_dir, step=global_step)
 

@@ -45,25 +45,26 @@ data:
     - data/runs/20260226_mbpp_extended_v1_valid_balanced_tasktext/transition_dataset.jsonl
     - data/runs/20260226_mbpp_balanced_tasktext/transition_dataset.jsonl
     - data/runs/humaneval/humaneval_transition_balanced.jsonl
-  batch_size: 2
-  num_workers: 2
+  filter_overlength: true
+  batch_size: 32
+  num_workers: 4
   shuffle: true
   pin_memory: true
   max_length:
     code_context: 768
     action: 192
-    current_state: 256
+    current_state: 550
     next_action: 192
-    next_state: 256
+    next_state: 550
 
 training:
-  epochs: 100
+  epochs: 6
   learning_rate: 0.0001
   weight_decay: 0.01
   gradient_accumulation_steps: 8
   max_grad_norm: 1.0
   log_every_steps: 10
-  save_every_steps: 2000
+  save_every_steps: 10
   seed: 42
   amp: true
   optimizer_beta1: 0.9
@@ -77,4 +78,4 @@ logging:
 
 output:
   root_dir: outputs
-  run_name: null
+  run_name: fullData-run1111

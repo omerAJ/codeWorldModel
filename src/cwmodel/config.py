@@ -79,6 +79,7 @@ class MaxLengthConfig:
 class DataConfig:
     path: Optional[str] = "data/humaneval_transition_1task.jsonl"
     paths: List[str] = field(default_factory=list)
+    filter_overlength: bool = False
     batch_size: int = 2
     num_workers: int = 0
     shuffle: bool = True
