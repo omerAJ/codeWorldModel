@@ -150,10 +150,40 @@ python scripts/train.py \
   --set output.run_name=maincoder_debug
 ```
 
+### 5) AR benchmark eval with bigcode-evaluation-harness (LoRA adapters)
+Clone harness once:
+```bash
+git clone https://github.com/bigcode-project/bigcode-evaluation-harness tools/bigcode-evaluation-harness
+```
+
+Then run evaluation from a compatible Python env (must include `torch`, `transformers`, `datasets`, `accelerate`, `peft`, `safetensors`):
+```bash
+python scripts/eval_bigcode_harness.py \
+  --harness-dir tools/bigcode-evaluation-harness \
+  --run-dir outputs/run_20260304T103005Z \
+  --checkpoint-step 30 \
+  --tasks humaneval \
+  --limit 1 \
+  --n-samples 1 \
+  --batch-size 1 \
+  --max-length-generation 512 \
+  --load-in-4bit \
+  --trust-remote-code \
+  --allow-code-execution \
+  --save-generations
+```
+
+Notes:
+- `--run-dir` + `--checkpoint-step` auto-resolves the adapter at `checkpoints/step_xxxxxx/backbone/`.
+- If `--model` is omitted, it is inferred from `adapter_config.json`.
+- The wrapper applies an adapter/base vocab-size compatibility fix before PEFT load.
+- For full HumanEval pass@k runs, remove `--limit` and increase `--n-samples` (e.g. 200).
+
 ### Project layout
 - `configs/train.maincoder_1b.yaml`: end-to-end defaults for local training
 - `scripts/pull_hf_snapshot.py`: local-only HF pull/update flow
 - `scripts/train.py`: config-driven training CLI
+- `scripts/eval_bigcode_harness.py`: wrapper for AR benchmark eval via bigcode-evaluation-harness + PEFT adapters
 - `src/cwmodel/data/*`: schema, dataset, collator
 - `src/cwmodel/modeling/*`: HF setup, latent predictor, world model
 - `src/cwmodel/training/*`: training loop and logging

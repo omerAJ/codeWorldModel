@@ -40,7 +40,11 @@ tokens:
     segment_sep: <SEG_SEP>
 
 data:
-  path: data/humaneval_transition_1task.jsonl
+  paths:
+    - data/runs/20260226T053436Z_humaneval_extended_v1_filtered/transition_dataset.jsonl
+    - data/runs/20260226_mbpp_extended_v1_valid_balanced_tasktext/transition_dataset.jsonl
+    - data/runs/20260226_mbpp_balanced_tasktext/transition_dataset.jsonl
+    - data/runs/humaneval/humaneval_transition_balanced.jsonl
   batch_size: 2
   num_workers: 2
   shuffle: true

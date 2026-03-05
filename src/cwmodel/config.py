@@ -77,12 +77,20 @@ class MaxLengthConfig:
 
 @dataclass
 class DataConfig:
-    path: str = "data/humaneval_transition_1task.jsonl"
+    path: Optional[str] = "data/humaneval_transition_1task.jsonl"
+    paths: List[str] = field(default_factory=list)
     batch_size: int = 2
     num_workers: int = 0
     shuffle: bool = True
     pin_memory: bool = True
     max_length: MaxLengthConfig = field(default_factory=MaxLengthConfig)
+
+    def resolved_paths(self) -> List[str]:
+        if self.paths:
+            return [str(p) for p in self.paths]
+        if self.path:
+            return [str(self.path)]
+        raise ValueError("No dataset path configured. Set data.path or data.paths in the config.")
 
 
 @dataclass

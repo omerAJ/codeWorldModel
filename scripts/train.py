@@ -117,7 +117,8 @@ def main() -> None:
 
     trainable_count, total_count = count_trainable_parameters(model)
 
-    dataset = TransitionDataset(cfg.data.path, cfg.tokens.wrappers)
+    dataset_paths = cfg.data.resolved_paths()
+    dataset = TransitionDataset(dataset_paths, cfg.tokens.wrappers)
     collator = TransitionCollator(tokenizer, cfg.data.max_length, summary_token_ids)
     dataloader_kwargs = {
         "dataset": dataset,
@@ -169,7 +170,8 @@ def main() -> None:
 
     summary = {
         "run_dir": str(run_dir),
-        "dataset_path": cfg.data.path,
+        "dataset_path": dataset_paths[0] if len(dataset_paths) == 1 else None,
+        "dataset_paths": dataset_paths,
         "global_steps": result.global_steps,
         "final_loss": result.final_loss,
         "trainable_parameters": trainable_count,

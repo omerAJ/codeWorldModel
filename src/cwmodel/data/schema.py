@@ -26,6 +26,7 @@ class TransitionExample:
     current_state: str
     next_action: str
     next_state: str
+    task_text: Optional[str] = None
     entry_point: Optional[str] = None
     line_no: Optional[int] = None
     next_line_no: Optional[int] = None
@@ -46,6 +47,7 @@ class TransitionExample:
             current_state=str(record["current_state"]),
             next_action=str(record["next_action"]),
             next_state=str(record["next_state"]),
+            task_text=(str(record["task_text"]) if record.get("task_text") is not None else None),
             entry_point=(str(record["entry_point"]) if record.get("entry_point") is not None else None),
             line_no=(int(record["line_no"]) if record.get("line_no") is not None else None),
             next_line_no=(int(record["next_line_no"]) if record.get("next_line_no") is not None else None),
