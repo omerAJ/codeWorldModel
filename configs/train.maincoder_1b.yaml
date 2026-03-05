@@ -46,8 +46,8 @@ data:
     - data/runs/20260226_mbpp_balanced_tasktext/transition_dataset.jsonl
     - data/runs/humaneval/humaneval_transition_balanced.jsonl
   filter_overlength: true
-  batch_size: 32
-  num_workers: 4
+  batch_size: 16
+  num_workers: 2
   shuffle: true
   pin_memory: true
   max_length:
